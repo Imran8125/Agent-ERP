@@ -9,6 +9,7 @@ from typing import Optional
 from db.models import get_conn
 from common.errors import ok, err
 from common.validation import require_non_empty_str
+from confirmation.crypto_ledger import append_audit_log
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,10 @@ TOOL_SCHEMA = {
                     "type": "string",
                     "description": "Customer phone number (optional).",
                 },
+                "address": {
+                    "type": "string",
+                    "description": "Customer address (optional).",
+                },
             },
             "required": ["name"],
         },
@@ -43,6 +48,7 @@ def add_customer(
     name: str,
     email: Optional[str] = None,
     phone: Optional[str] = None,
+    address: Optional[str] = None,
 ) -> dict:
     """
     Low-risk write — auto-executes without confirmation.
@@ -72,20 +78,19 @@ def add_customer(
 
                 cur.execute(
                     """
-                    INSERT INTO entities (type, name, email, phone)
-                    VALUES ('customer', %s, %s, %s)
+                    INSERT INTO entities (type, name, email, phone, address)
+                    VALUES ('customer', %s, %s, %s, %s)
                     RETURNING id
                     """,
-                    (name, email, phone),
+                    (name, email, phone, address),
                 )
                 customer_id = str(cur.fetchone()["id"])
 
-                cur.execute(
-                    """
-                    INSERT INTO audit_log (actor, action, detail)
-                    VALUES ('crm_agent', 'tool_call', %s)
-                    """,
-                    (json.dumps({"tool": "add_customer", "customer_id": customer_id, "name": name}),),
+                append_audit_log(
+                    cur,
+                    actor="crm_agent",
+                    action="tool_call",
+                    detail={"tool": "add_customer", "customer_id": customer_id, "name": name, "email": email, "phone": phone, "address": address},
                 )
 
         return ok({
@@ -93,6 +98,7 @@ def add_customer(
             "name":           name,
             "email":          email,
             "phone":          phone,
+            "address":        address,
             "already_exists": False,
         })
 

@@ -1,8 +1,7 @@
-"""
-get_customer_history — read-only tool to fetch transaction history for a customer.
-"""
 from __future__ import annotations
 import logging
+import re
+from typing import Optional, Any
 
 from db.models import get_conn
 from common.errors import ok, err
@@ -14,39 +13,84 @@ TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "get_customer_history",
-        "description": "Get all transactions and line items for a specific customer.",
+        "description": "Get all transactions, orders, line items, and purchase volume for a specific customer. Supports customer name, keyword, or UUID.",
         "parameters": {
             "type": "object",
             "properties": {
                 "customer_id": {
                     "type": "string",
-                    "description": "UUID of the customer entity.",
-                }
+                    "description": "Customer UUID, company name, or keyword (e.g. 'Apex', 'Apex Industrial', 'Zenith Systems'). Auto-resolved.",
+                },
+                "customer_name": {
+                    "type": "string",
+                    "description": "Optional company name of the customer (e.g. 'Apex Industrial', 'Zenith Systems', 'Global Automation').",
+                },
             },
-            "required": ["customer_id"],
         },
     },
 }
 
 
-def get_customer_history(customer_id: str) -> dict:
+def get_customer_history(
+    customer_id: Optional[str] = None,
+    customer_name: Optional[str] = None,
+    *args,
+    **kwargs,
+) -> dict:
     """
-    Read-only. Returns transactions + line_items for the customer.
-    Returns: {"ok": True, "customer": {...}, "transactions": [...]} | {"ok": False, "error": str}
+    Read-only. Returns transactions + line_items + lifetime spend for the customer.
+    Supports customer_id (UUID or name) or customer_name.
     """
     try:
-        require_uuid(customer_id, "customer_id")
+        # Resolve identifier
+        identifier = customer_name or customer_id
+        if not identifier and args and isinstance(args[0], str):
+            identifier = args[0]
+        if not identifier:
+            return err("customer_id or customer_name is required")
+
+        identifier = identifier.strip()
 
         with get_conn() as conn:
             with conn.cursor() as cur:
-                # Verify customer exists
-                cur.execute(
-                    "SELECT id, name, email, phone, address FROM entities WHERE id = %s AND type = 'customer'",
-                    (customer_id,),
-                )
-                cust = cur.fetchone()
+                cust = None
+
+                # 1. Try UUID
+                try:
+                    require_uuid(identifier, "customer_id")
+                    cur.execute(
+                        "SELECT id, name, email, phone, address FROM entities WHERE id = %s AND type = 'customer'",
+                        (identifier,),
+                    )
+                    cust = cur.fetchone()
+                except Exception:
+                    pass
+
+                # 2. Try Name exact or ILIKE
                 if not cust:
-                    return err(f"Customer not found: {customer_id}")
+                    cur.execute(
+                        "SELECT id, name, email, phone, address FROM entities WHERE type = 'customer' AND name ILIKE %s ORDER BY name LIMIT 1",
+                        (f"%{identifier}%",),
+                    )
+                    cust = cur.fetchone()
+
+                # 3. Try Word tokens (e.g. 'Apex Industrial' -> matches 'Apex Manufacturing Ltd')
+                if not cust:
+                    clean = re.sub(r"[^\w\s]", " ", identifier)
+                    words = [w for w in clean.split() if len(w) > 2 and w.lower() not in ("ltd", "inc", "corp", "co", "llc")]
+                    for w in words:
+                        cur.execute(
+                            "SELECT id, name, email, phone, address FROM entities WHERE type = 'customer' AND name ILIKE %s ORDER BY name LIMIT 1",
+                            (f"%{w}%",),
+                        )
+                        cust = cur.fetchone()
+                        if cust:
+                            break
+
+                if not cust:
+                    return err(f"Customer not found for identifier: {identifier}")
+
+                resolved_id = str(cust["id"])
 
                 # Get transactions
                 cur.execute(
@@ -56,7 +100,7 @@ def get_customer_history(customer_id: str) -> dict:
                     WHERE t.entity_id = %s
                     ORDER BY t.created_at DESC
                     """,
-                    (customer_id,),
+                    (resolved_id,),
                 )
                 tx_rows = cur.fetchall()
 

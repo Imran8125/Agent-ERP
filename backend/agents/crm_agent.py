@@ -11,6 +11,7 @@ from tools.add_customer import add_customer, TOOL_SCHEMA as ADD_CUST_SCHEMA
 from tools.get_customer_history import get_customer_history, TOOL_SCHEMA as HIST_SCHEMA
 from tools.log_sale import log_sale, TOOL_SCHEMA as SALE_SCHEMA
 from tools.get_stock import get_stock, TOOL_SCHEMA as STOCK_SCHEMA
+from tools.get_customers import get_customers, TOOL_SCHEMA as CUST_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -18,27 +19,32 @@ SYSTEM_PROMPT = """You are the CRM Agent for AgentERP, an AI-first ERP system.
 You manage customer relationships and sales transactions.
 
 Your capabilities:
-- Look up customer transaction history
+- Look up and search customers using get_customers
+- Look up customer transaction history and purchase volume using get_customer_history
 - Add new customers to the system (auto-executes — low risk)
 - Log sales to customers (requires user confirmation)
 - Check item stock before logging a sale
 
 Key rules:
+- CUSTOMER RESOLUTION RULE: NEVER ask the user to provide a customer ID or UUID!
+  1. If the user mentions a customer by name (e.g. "Apex Industrial", "Apex", "Zenith"), immediately call get_customer_history with customer_id or customer_name set to that company name. The tool will auto-resolve it.
+  2. If you need to search or list customers, call get_customers().
 - log_sale goes through pending_actions and REQUIRES confirmation. Always explain this to the user.
 - add_customer executes immediately (no confirmation needed).
 - When logging a sale, always check stock first using get_stock to confirm availability.
-- Refer to customers by name, not ID, in your responses.
+- Refer to customers by company name in your responses. Summarize lifetime spend, orders, and recent transactions clearly.
 - Currency is Indian Rupee (₹).
-- Be warm and helpful in tone — this is customer-facing data.
+- Be professional, warm, and helpful in tone.
 """
 
-TOOLS = [ADD_CUST_SCHEMA, HIST_SCHEMA, SALE_SCHEMA, STOCK_SCHEMA]
+TOOLS = [ADD_CUST_SCHEMA, HIST_SCHEMA, SALE_SCHEMA, STOCK_SCHEMA, CUST_SCHEMA]
 
 TOOL_DISPATCH = {
     "add_customer":         lambda args: add_customer(**args),
     "get_customer_history": lambda args: get_customer_history(**args),
     "log_sale":             lambda args: log_sale(**args),
     "get_stock":            lambda args: get_stock(**args),
+    "get_customers":        lambda args: get_customers(**args),
 }
 
 

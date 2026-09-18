@@ -8,6 +8,7 @@ import logging
 from db.models import get_conn
 from common.errors import ok, err
 from common.validation import require_uuid
+from confirmation.crypto_ledger import append_audit_log
 
 logger = logging.getLogger(__name__)
 
@@ -102,12 +103,16 @@ def receive_stock(transaction_id: str) -> dict:
                 )
                 pending_id = str(cur.fetchone()["id"])
 
-                cur.execute(
-                    """
-                    INSERT INTO audit_log (pending_action_id, actor, action, detail)
-                    VALUES (%s, 'procurement_agent', 'proposed', %s)
-                    """,
-                    (pending_id, json.dumps({"transaction_id": transaction_id})),
+                append_audit_log(
+                    cur,
+                    actor="procurement_agent",
+                    action="proposed",
+                    pending_action_id=pending_id,
+                    detail={
+                        "transaction_id": transaction_id,
+                        "line_items": payload["line_items"],
+                        "summary": summary,
+                    },
                 )
 
         return ok({"pending_action_id": pending_id, "summary": summary})

@@ -8,6 +8,7 @@ import logging
 from db.models import get_conn
 from common.errors import ok, err
 from common.validation import require_uuid, validate_items_list
+from confirmation.crypto_ledger import append_audit_log
 
 logger = logging.getLogger(__name__)
 
@@ -121,12 +122,17 @@ def log_sale(customer_id: str, items: list[dict]) -> dict:
                 )
                 pending_id = str(cur.fetchone()["id"])
 
-                cur.execute(
-                    """
-                    INSERT INTO audit_log (pending_action_id, actor, action, detail)
-                    VALUES (%s, 'crm_agent', 'proposed', %s)
-                    """,
-                    (pending_id, json.dumps({"customer": customer["name"], "total": total_amount})),
+                append_audit_log(
+                    cur,
+                    actor="crm_agent",
+                    action="proposed",
+                    pending_action_id=pending_id,
+                    detail={
+                        "customer": customer["name"],
+                        "total_amount": total_amount,
+                        "items": validated_items,
+                        "summary": summary,
+                    },
                 )
 
         return ok({

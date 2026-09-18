@@ -13,15 +13,8 @@ TAG_TO_AGENT = {
     "crm":         "crm",
     "reporting":   "reporting",
     "reports":     "reporting",
-}
-
-# Keywords → agent for intent classification
-INTENT_KEYWORDS = {
-    "procurement": ["purchase order", "po", "vendor", "order", "buy", "restock", "supplier", "receive stock", "shipment"],
-    "inventory":   ["stock", "inventory", "item", "sku", "warehouse", "quantity", "units", "low stock", "reorder"],
-    "finance":     ["cash", "ledger", "revenue", "expense", "payment", "financial", "balance", "accounting", "profit"],
-    "crm":         ["customer", "client", "sale", "contact", "account", "history", "buyer"],
-    "reporting":   ["report", "chart", "trend", "analytics", "summary", "dashboard", "top customers", "performance"],
+    "audit":       "audit",
+    "activity":    "audit",
 }
 
 
@@ -39,20 +32,51 @@ def extract_tag(message: str) -> Optional[str]:
 
 def classify_intent(message: str) -> str:
     """
-    Keyword-based intent classification. Returns agent name.
-    Defaults to 'master' if no clear match.
+    Precision regex intent classifier with prioritized domain triggers.
+    Prevents false substring collisions and respects visualization intent.
     """
-    text = message.lower()
-    scores = {agent: 0 for agent in INTENT_KEYWORDS}
-    for agent, keywords in INTENT_KEYWORDS.items():
-        for kw in keywords:
-            if kw in text:
-                scores[agent] += 1
+    text = f" {message.lower()} "
 
-    best = max(scores, key=scores.__getitem__)
-    if scores[best] == 0:
-        return "master"
-    return best
+    # 1. Cryptographic Audit / Merkle / WORM
+    if re.search(r"\b(audit|merkle|tamper|cryptographic|worm|hash\s*chain|integrity)\b", text):
+        return "audit"
+
+    # 2. Charts & Reporting (takes precedence if charting/breakdown requested)
+    if re.search(
+        r"\b(charts?|graphs?|plots?|pie\s*charts?|bar\s*charts?|line\s*charts?|area\s*charts?|trends?|analytics|visualize|reports?|top\s+customers?)\b",
+        text,
+    ):
+        return "reporting"
+
+    # 3. Procurement / Purchasing / Restocking
+    if re.search(
+        r"\b(purchase\s*orders?|po\b|order|orders|buy\b|restock|suppliers?|vendors?|procure|replenish)\b",
+        text,
+    ):
+        return "procurement"
+
+    # 4. CRM / Customer relationships
+    if re.search(
+        r"\b(customers?|clients?|buyers?|transaction\s*history|purchase\s*volume|sales\s*history)\b",
+        text,
+    ):
+        return "crm"
+
+    # 5. Finance & Ledger
+    if re.search(
+        r"\b(cash|ledger|expenses?|revenue|profit|balance\s*sheet|accounting|financial|debits?|credits?)\b",
+        text,
+    ):
+        return "finance"
+
+    # 6. Inventory & Stock
+    if re.search(
+        r"\b(stocks?|inventory|warehouse|quantity|sku\b|on\s*hand|shortage)\b",
+        text,
+    ):
+        return "inventory"
+
+    return "master"
 
 
 def route_message(message: str) -> str:

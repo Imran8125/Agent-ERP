@@ -8,6 +8,7 @@ import logging
 from db.models import get_conn
 from common.errors import ok, err
 from common.validation import require_uuid, require_non_empty_str
+from confirmation.crypto_ledger import append_audit_log
 
 logger = logging.getLogger(__name__)
 
@@ -41,24 +42,49 @@ TOOL_SCHEMA = {
 def adjust_stock(item_id: str, delta: int, reason: str) -> dict:
     """
     Proposes items.quantity_on_hand += delta + ledger entry — via pending_actions.
+    Supports item_id as UUID, SKU code, or item name.
     Returns: {"ok": True, "pending_action_id": str, "summary": str}
            | {"ok": False, "error": str}
     """
     try:
-        require_uuid(item_id, "item_id")
         require_non_empty_str(reason, "reason")
         if not isinstance(delta, int) or delta == 0:
             return err("delta must be a non-zero integer")
 
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, sku, name, quantity_on_hand, unit_cost FROM items WHERE id = %s",
-                    (item_id,),
-                )
-                item = cur.fetchone()
+                item = None
+                # Try by UUID first
+                try:
+                    require_uuid(item_id, "item_id")
+                    cur.execute(
+                        "SELECT id, sku, name, quantity_on_hand, unit_cost FROM items WHERE id = %s",
+                        (item_id,),
+                    )
+                    item = cur.fetchone()
+                except Exception:
+                    pass
+
+                # Try by SKU
+                if not item:
+                    cur.execute(
+                        "SELECT id, sku, name, quantity_on_hand, unit_cost FROM items WHERE sku ILIKE %s",
+                        (item_id.strip(),),
+                    )
+                    item = cur.fetchone()
+
+                # Try by Name
+                if not item:
+                    cur.execute(
+                        "SELECT id, sku, name, quantity_on_hand, unit_cost FROM items WHERE name ILIKE %s LIMIT 1",
+                        (f"%{item_id.strip()}%",),
+                    )
+                    item = cur.fetchone()
+
                 if not item:
                     return err(f"Item not found: {item_id}")
+
+                resolved_id = str(item["id"])
 
                 new_qty = item["quantity_on_hand"] + delta
                 if new_qty < 0:
@@ -68,7 +94,7 @@ def adjust_stock(item_id: str, delta: int, reason: str) -> dict:
                     )
 
                 payload = {
-                    "item_id":   item_id,
+                    "item_id":   resolved_id,
                     "item_name": item["name"],
                     "sku":       item["sku"],
                     "delta":     delta,
@@ -93,12 +119,18 @@ def adjust_stock(item_id: str, delta: int, reason: str) -> dict:
                 )
                 pending_id = str(cur.fetchone()["id"])
 
-                cur.execute(
-                    """
-                    INSERT INTO audit_log (pending_action_id, actor, action, detail)
-                    VALUES (%s, 'inventory_agent', 'proposed', %s)
-                    """,
-                    (pending_id, json.dumps({"item": item["name"], "delta": delta, "reason": reason})),
+                append_audit_log(
+                    cur,
+                    actor="inventory_agent",
+                    action="proposed",
+                    pending_action_id=pending_id,
+                    detail={
+                        "item": item["name"],
+                        "item_id": item_id,
+                        "delta": delta,
+                        "reason": reason,
+                        "summary": summary,
+                    },
                 )
 
         return ok({"pending_action_id": pending_id, "summary": summary, "new_quantity": new_qty})

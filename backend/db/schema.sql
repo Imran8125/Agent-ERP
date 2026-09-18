@@ -77,20 +77,50 @@ CREATE TABLE IF NOT EXISTS ledger (
 -- ---------------------------------------------------------------------------
 -- pending_actions: confirmation queue (ALL writes go through here)
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS pending_actions (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    action_type TEXT NOT NULL,           -- tool name to execute on confirm
-    payload     JSONB NOT NULL,
-    summary     TEXT NOT NULL,           -- plain-language summary shown to user
-    proposed_by TEXT NOT NULL,           -- agent name or 'inbound_email'
-    status      TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending', 'confirmed', 'rejected')),
-    created_at  TIMESTAMPTZ DEFAULT now(),
-    resolved_at TIMESTAMPTZ
+CREATE TABLE IF NOT EXISTS workspaces (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    code       TEXT NOT NULL,
+    env        TEXT NOT NULL CHECK (env IN ('Production', 'Staging', 'Sandbox')),
+    compute    INTEGER NOT NULL DEFAULT 50,
+    agents     INTEGER NOT NULL DEFAULT 5,
+    currency   TEXT NOT NULL DEFAULT 'INR',
+    symbol     TEXT NOT NULL DEFAULT '₹',
+    is_active  BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- ---------------------------------------------------------------------------
--- audit_log: immutable record of every tool call and confirm/reject
+-- system_settings: global ERP guardrails and autonomous thresholds
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS system_settings (
+    id              TEXT PRIMARY KEY DEFAULT 'default',
+    sign_off_limit  NUMERIC(12,2) NOT NULL DEFAULT 50000.00,
+    daily_cap       NUMERIC(12,2) NOT NULL DEFAULT 250000.00,
+    auto_replenish  BOOLEAN NOT NULL DEFAULT true,
+    polling_freq    INTEGER NOT NULL DEFAULT 5000,
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------------
+-- pending_actions: confirmation queue (ALL writes go through here)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pending_actions (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id TEXT REFERENCES workspaces(id),
+    action_type  TEXT NOT NULL,           -- tool name to execute on confirm
+    payload      JSONB NOT NULL,
+    summary      TEXT NOT NULL,           -- plain-language summary shown to user
+    proposed_by  TEXT NOT NULL,           -- agent name or 'inbound_email'
+    status       TEXT NOT NULL DEFAULT 'pending'
+                     CHECK (status IN ('pending', 'confirmed', 'rejected')),
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    resolved_at  TIMESTAMPTZ
+);
+
+-- ---------------------------------------------------------------------------
+-- audit_log: immutable record of every tool call and confirm/reject (WORM chained)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS audit_log (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -98,6 +128,31 @@ CREATE TABLE IF NOT EXISTS audit_log (
     actor             TEXT NOT NULL,     -- 'user' | agent name | 'system'
     action            TEXT NOT NULL,     -- 'proposed' | 'confirmed' | 'rejected' | 'tool_call'
     detail            JSONB,
+    created_at        TIMESTAMPTZ DEFAULT now(),
+    prev_hash         TEXT,              -- SHA-256 hash of previous block
+    entry_hash        TEXT               -- SHA-256 hash of current block
+);
+
+-- ---------------------------------------------------------------------------
+-- conversations & messages: multi-session persistent chat history
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS conversations (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id TEXT REFERENCES workspaces(id),
+    title        TEXT NOT NULL,
+    active_agent TEXT DEFAULT 'master',
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    updated_at   TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id   UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    role              TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content           TEXT NOT NULL,
+    agent             TEXT,
+    pending_action_id UUID REFERENCES pending_actions(id),
+    metadata          JSONB DEFAULT '{}'::jsonb,
     created_at        TIMESTAMPTZ DEFAULT now()
 );
 
@@ -114,3 +169,7 @@ CREATE INDEX IF NOT EXISTS idx_pending_status       ON pending_actions(status);
 CREATE INDEX IF NOT EXISTS idx_audit_created        ON audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_items_sku            ON items(sku);
 CREATE INDEX IF NOT EXISTS idx_entities_type        ON entities(type);
+CREATE INDEX IF NOT EXISTS idx_workspaces_active    ON workspaces(is_active);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_messages_created     ON messages(created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);

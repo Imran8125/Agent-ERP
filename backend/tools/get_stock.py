@@ -4,6 +4,7 @@ Fuzzy-matches item_name if provided, else returns all items.
 """
 from __future__ import annotations
 import logging
+import re
 from typing import Optional
 
 from db.models import get_conn
@@ -39,6 +40,8 @@ def get_stock(item_name: Optional[str] = None) -> dict:
         with get_conn() as conn:
             with conn.cursor() as cur:
                 if item_name:
+                    cleaned = item_name.strip()
+                    # 1. Direct ILIKE
                     cur.execute(
                         """
                         SELECT id, sku, name, description, unit_cost, unit_price,
@@ -47,8 +50,61 @@ def get_stock(item_name: Optional[str] = None) -> dict:
                         WHERE name ILIKE %s OR sku ILIKE %s OR description ILIKE %s
                         ORDER BY name
                         """,
-                        (f"%{item_name}%", f"%{item_name}%", f"%{item_name}%"),
+                        (f"%{cleaned}%", f"%{cleaned}%", f"%{cleaned}%"),
                     )
+                    rows = cur.fetchall()
+
+                    # 2. Singularize if plural
+                    if not rows and cleaned.lower().endswith("s") and len(cleaned) > 3:
+                        singular = cleaned[:-1]
+                        cur.execute(
+                            """
+                            SELECT id, sku, name, description, unit_cost, unit_price,
+                                   quantity_on_hand, reorder_threshold, category
+                            FROM items
+                            WHERE name ILIKE %s OR sku ILIKE %s OR description ILIKE %s
+                            ORDER BY name
+                            """,
+                            (f"%{singular}%", f"%{singular}%", f"%{singular}%"),
+                        )
+                        rows = cur.fetchall()
+
+                    # 3. Word token search
+                    if not rows:
+                        clean_text = re.sub(r"[^\w\s]", " ", cleaned)
+                        words = [w.rstrip("s") for w in clean_text.split() if len(w) > 2]
+                        if words:
+                            clauses = " AND ".join(["(name ILIKE %s OR description ILIKE %s)"] * len(words))
+                            params = []
+                            for w in words:
+                                params.extend([f"%{w}%", f"%{w}%"])
+                            cur.execute(
+                                f"""
+                                SELECT id, sku, name, description, unit_cost, unit_price,
+                                       quantity_on_hand, reorder_threshold, category
+                                FROM items
+                                WHERE {clauses}
+                                ORDER BY name
+                                """,
+                                tuple(params),
+                            )
+                            rows = cur.fetchall()
+
+                            # 4. Fallback to any word
+                            if not rows:
+                                or_clauses = " OR ".join(["name ILIKE %s"] * len(words))
+                                or_params = [f"%{w}%" for w in words]
+                                cur.execute(
+                                    f"""
+                                    SELECT id, sku, name, description, unit_cost, unit_price,
+                                           quantity_on_hand, reorder_threshold, category
+                                    FROM items
+                                    WHERE {or_clauses}
+                                    ORDER BY name
+                                    """,
+                                    tuple(or_params),
+                                )
+                                rows = cur.fetchall()
                 else:
                     cur.execute(
                         """
@@ -60,7 +116,7 @@ def get_stock(item_name: Optional[str] = None) -> dict:
                             name
                         """
                     )
-                rows = cur.fetchall()
+                    rows = cur.fetchall()
 
         items = []
         for r in rows:

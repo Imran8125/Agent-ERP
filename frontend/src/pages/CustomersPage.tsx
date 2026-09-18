@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { getCustomers, getCustomerHistory, formatINR, timeAgo } from '../api';
 import type { Customer } from '../api';
-import { Users, Mail, Phone, MapPin, Plus, ShoppingBag, ChevronRight } from 'lucide-react';
+import { Users, Mail, Phone, MapPin, Plus, ShoppingBag, ChevronRight, Pencil } from 'lucide-react';
+import { EntityModal, SaleModal } from '../components/ManualEntryModals';
 
 export function CustomersPage() {
   const [customers, setCustomers]   = useState<Customer[]>([]);
@@ -9,6 +10,19 @@ export function CustomersPage() {
   const [history,   setHistory]     = useState<any>(null);
   const [loading,   setLoading]     = useState(true);
   const [loadingH,  setLoadingH]    = useState(false);
+  const [showAdd,   setShowAdd]     = useState(false);
+  const [editCust,  setEditCust]    = useState<Customer | null>(null);
+  const [showSale,  setShowSale]    = useState(false);
+
+  const refresh = async () => {
+    try {
+      const res = await getCustomers();
+      if (res.ok) {
+        setCustomers(res.customers);
+        if (res.customers[0] && !selected) selectCustomer(res.customers[0]);
+      }
+    } catch {}
+  };
 
   const selectCustomer = async (c: Customer) => {
     setSelected(c);
@@ -32,7 +46,7 @@ export function CustomersPage() {
       <div style={{ width: 300, borderRight: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
         <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontWeight: 600, fontSize: 13 }}>Customers ({customers.length})</span>
-          <button className="btn btn-sm btn-primary" style={{ gap: 4 }}>
+          <button className="btn btn-sm btn-primary" style={{ gap: 4 }} onClick={() => setShowAdd(true)}>
             <Plus size={12}/> Add
           </button>
         </div>
@@ -67,6 +81,15 @@ export function CustomersPage() {
 
       {/* Right panel — customer detail */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
+        {showAdd && <EntityModal kind="customer" onClose={() => setShowAdd(false)} onSaved={() => refresh()} />}
+        {editCust && <EntityModal kind="customer" entity={editCust} onClose={() => setEditCust(null)} onSaved={() => refresh()} />}
+        {showSale && (
+          <SaleModal
+            presetCustomerId={selected?.id}
+            onClose={() => setShowSale(false)}
+            onSaved={() => { refresh(); if (selected) selectCustomer(selected); }}
+          />
+        )}
         {!selected ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-tertiary)' }}>
             <Users size={24} style={{ marginRight: 8 }} /> Select a customer
@@ -104,7 +127,8 @@ export function CustomersPage() {
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 12, marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--color-border)' }}>
-                <button className="btn btn-primary btn-sm"><ShoppingBag size={12}/> Log New Sale</button>
+                <button className="btn btn-primary btn-sm" onClick={() => setShowSale(true)}><ShoppingBag size={12}/> Log New Sale</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => setEditCust(selected)}><Pencil size={12}/> Edit</button>
                 <button className="btn btn-ghost btn-sm"><Mail size={12}/> Send Email</button>
               </div>
             </div>

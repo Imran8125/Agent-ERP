@@ -43,7 +43,7 @@ def require_non_empty_str(value: str, field_name: str = "value") -> str:
 
 def validate_items_list(items: list[dict]) -> list[dict]:
     """
-    Validate a list of item dicts: [{item_id, quantity, unit_cost?}].
+    Validate a list of item dicts: [{item_id or sku or name, quantity, unit_cost?}].
     Returns the list if valid, raises ValueError otherwise.
     """
     if not isinstance(items, list) or len(items) == 0:
@@ -51,6 +51,8 @@ def validate_items_list(items: list[dict]) -> list[dict]:
     for i, item in enumerate(items):
         if not isinstance(item, dict):
             raise ValueError(f"items[{i}] must be a dict")
-        require_uuid(item.get("item_id", ""), f"items[{i}].item_id")
+        has_id = bool(item.get("item_id") or item.get("sku") or item.get("name"))
+        if not has_id:
+            raise ValueError(f"items[{i}] must have an item_id, sku, or name")
         require_positive_int(item.get("quantity", 0), f"items[{i}].quantity")
     return items

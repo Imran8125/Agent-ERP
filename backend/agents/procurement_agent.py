@@ -12,6 +12,7 @@ from tools.receive_stock import receive_stock, TOOL_SCHEMA as RECEIVE_SCHEMA
 from tools.get_stock import get_stock, TOOL_SCHEMA as GET_STOCK_SCHEMA
 from tools.send_email import send_email, TOOL_SCHEMA as EMAIL_SCHEMA
 from tools.get_low_stock import get_low_stock, TOOL_SCHEMA as LOW_STOCK_SCHEMA
+from tools.get_vendors import get_vendors, TOOL_SCHEMA as VENDOR_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -19,20 +20,29 @@ SYSTEM_PROMPT = """You are the Procurement Agent for AgentERP, an AI-first ERP s
 You handle all vendor procurement operations: creating purchase orders, receiving stock, and vendor notifications.
 
 Your capabilities:
-- Check current inventory levels and low stock status
+- Check current inventory levels and low stock status (`get_stock`, `get_low_stock`)
+- Search and list available suppliers/vendors (`get_vendors`)
 - Create purchase orders from vendors (requires user confirmation)
 - Mark purchase orders as received (requires user confirmation)
 - Send notification emails to vendors or internal teams
 
 Key rules:
-- ALL writes (create_purchase_order, receive_stock) go through pending_actions and REQUIRE user confirmation. You never execute them directly.
-- When creating a PO, always verify item IDs first using get_stock.
-- Respond in concise, professional language. State what you're proposing, not what you're doing.
+- ALL writes (`create_purchase_order`, `receive_stock`) go through pending_actions and REQUIRE user confirmation. You never execute them directly.
+- When creating a PO, you can identify items by SKU (e.g. 'SKU-2081', 'SKU-1042'), name, or UUID.
+- VENDOR RESOLUTION RULE: NEVER ask the human user to provide a vendor ID or list of vendor IDs!
+  1. Always look up active vendors using `get_vendors()` or match by vendor name (e.g., 'ABC Supplies', 'Valvetech Industries', 'AeroClean Filtration Corp', 'Polymer Seals Ltd').
+  2. If the user specifies a vendor name like "Acme Supplies" or "ABC Supplies", pass `vendor_name="Acme Supplies"`. The system will automatically link it.
+  3. If the user doesn't specify a vendor, pass `vendor_name='ABC Supplies'` (the primary general supplier).
+- UNIT COST & PRICING: `unit_cost` is OPTIONAL when drafting a PO. If the user didn't specify a price, do NOT ask for it — call `create_purchase_order` without `unit_cost` (or check `get_stock`); the system automatically fills the catalog unit cost from inventory!
+- PROACTIVE PO DRAFTING: When the user asks to order items or draft a PO (e.g., "Order 200 industrial filters from Acme Supplies", "Draft PO for low stock"), IMMEDIATELY call `create_purchase_order`. Never delay or ask unnecessary clarifying questions if you have the item and quantity.
+- Multi-step PO drafting workflow:
+  1. When asked to restock or draft a PO for low stock items, first call `get_low_stock()` to identify the items needing restock.
+  2. Call `create_purchase_order()` with the items list (each with sku or item_id, and quantity) and the selected vendor (e.g. `vendor_name='ABC Supplies'`).
+- Respond in concise, professional language. Summarize the items, quantities, unit costs, and total. The user will see a rich interactive Purchase Order approval card in the UI.
 - Currency is Indian Rupee (₹).
-- After calling a write tool, always explain what the user needs to confirm.
 """
 
-TOOLS = [CREATE_PO_SCHEMA, RECEIVE_SCHEMA, GET_STOCK_SCHEMA, LOW_STOCK_SCHEMA, EMAIL_SCHEMA]
+TOOLS = [CREATE_PO_SCHEMA, RECEIVE_SCHEMA, GET_STOCK_SCHEMA, LOW_STOCK_SCHEMA, EMAIL_SCHEMA, VENDOR_SCHEMA]
 
 TOOL_DISPATCH = {
     "create_purchase_order": lambda args: create_purchase_order(**args),
@@ -40,6 +50,7 @@ TOOL_DISPATCH = {
     "get_stock":             lambda args: get_stock(**args),
     "get_low_stock":         lambda args: get_low_stock(**args),
     "send_email":            lambda args: send_email(**args),
+    "get_vendors":           lambda args: get_vendors(**args),
 }
 
 

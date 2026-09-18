@@ -11,6 +11,7 @@ from typing import Optional
 
 from db.models import get_conn
 from common.errors import ok, err
+from confirmation.crypto_ledger import append_audit_log
 
 logger = logging.getLogger(__name__)
 
@@ -127,16 +128,18 @@ def confirm_pending_action(pending_action_id: str) -> dict:
                     (pending_action_id,),
                 )
 
-                # Audit log
-                cur.execute(
-                    """
-                    INSERT INTO audit_log (pending_action_id, actor, action, detail)
-                    VALUES (%s, 'user', 'confirmed', %s)
-                    """,
-                    (
-                        pending_action_id,
-                        json.dumps({"action_type": action_type, "result": str(result)[:500]}),
-                    ),
+                # Audit log with cryptographic SHA-256 chain
+                append_audit_log(
+                    cur,
+                    actor="user",
+                    action="confirmed",
+                    pending_action_id=pending_action_id,
+                    detail={
+                        "action_type": action_type,
+                        "result": str(result)[:500],
+                        "summary": row.get("summary"),
+                        **(row.get("payload") or {}),
+                    },
                 )
 
         return ok({"confirmed": True, "action_type": action_type, "result": result})
@@ -155,7 +158,7 @@ def reject_pending_action(pending_action_id: str, reason: str = "") -> dict:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, status FROM pending_actions WHERE id = %s FOR UPDATE
+                    SELECT id, status, payload, summary FROM pending_actions WHERE id = %s FOR UPDATE
                     """,
                     (pending_action_id,),
                 )
@@ -173,12 +176,12 @@ def reject_pending_action(pending_action_id: str, reason: str = "") -> dict:
                     """,
                     (pending_action_id,),
                 )
-                cur.execute(
-                    """
-                    INSERT INTO audit_log (pending_action_id, actor, action, detail)
-                    VALUES (%s, 'user', 'rejected', %s)
-                    """,
-                    (pending_action_id, json.dumps({"reason": reason})),
+                append_audit_log(
+                    cur,
+                    actor="user",
+                    action="rejected",
+                    pending_action_id=pending_action_id,
+                    detail={"reason": reason, "summary": row.get("summary")},
                 )
 
         return ok({"rejected": True, "reason": reason})
@@ -320,10 +323,23 @@ def _exec_adjust_stock(payload: dict, cur) -> dict:
     new_qty = cur.fetchone()["quantity_on_hand"]
 
     if amount > 0:
-        entry_type = "debit" if delta > 0 else "credit"
-        cur.execute(
-            "INSERT INTO ledger (entry_type, account, amount, description) VALUES (%s, 'inventory', %s, %s)",
-            (entry_type, amount, f"Stock adjustment: {reason}"),
-        )
+        if delta > 0:
+            cur.execute(
+                "INSERT INTO ledger (entry_type, account, amount, description) VALUES ('debit', 'inventory', %s, %s)",
+                (amount, f"Stock adjustment: {reason}"),
+            )
+            cur.execute(
+                "INSERT INTO ledger (entry_type, account, amount, description) VALUES ('credit', 'cash', %s, %s)",
+                (amount, f"Stock adjustment offset: {reason}"),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO ledger (entry_type, account, amount, description) VALUES ('debit', 'expense', %s, %s)",
+                (amount, f"Stock adjustment expense: {reason}"),
+            )
+            cur.execute(
+                "INSERT INTO ledger (entry_type, account, amount, description) VALUES ('credit', 'inventory', %s, %s)",
+                (amount, f"Stock adjustment: {reason}"),
+            )
 
     return ok({"item_id": item_id, "new_quantity": new_qty, "delta": delta})

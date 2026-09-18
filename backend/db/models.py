@@ -134,3 +134,214 @@ class AuditLog:
     pending_action_id: Optional[str] = None
     detail: Optional[dict] = None
     created_at: Optional[datetime] = None
+
+
+@dataclass
+class Conversation:
+    id: str
+    title: str
+    workspace_id: Optional[str] = None
+    active_agent: str = "master"
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    message_count: int = 0
+
+
+@dataclass
+class Message:
+    id: str
+    conversation_id: str
+    role: str
+    content: str
+    agent: Optional[str] = None
+    pending_action_id: Optional[str] = None
+    metadata: dict = field(default_factory=dict)
+    created_at: Optional[datetime] = None
+
+
+# ---------------------------------------------------------------------------
+# Conversation & Message DB Helpers
+# ---------------------------------------------------------------------------
+
+def create_conversation(title: str = "New Conversation", workspace_id: Optional[str] = None, active_agent: str = "master") -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO conversations (title, workspace_id, active_agent)
+                VALUES (%s, %s, %s)
+                RETURNING id, title, workspace_id, active_agent, created_at, updated_at;
+                """,
+                (title, workspace_id, active_agent)
+            )
+            row = cur.fetchone()
+            return {
+                "id": str(row["id"]),
+                "title": row["title"],
+                "workspace_id": row["workspace_id"],
+                "active_agent": row["active_agent"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                "message_count": 0,
+            }
+
+
+def list_conversations(workspace_id: Optional[str] = None) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            query = """
+                SELECT
+                    c.id, c.title, c.workspace_id, c.active_agent, c.created_at, c.updated_at,
+                    COUNT(m.id) AS message_count,
+                    (
+                        SELECT content FROM messages
+                        WHERE conversation_id = c.id
+                        ORDER BY created_at DESC LIMIT 1
+                    ) AS last_message
+                FROM conversations c
+                LEFT JOIN messages m ON c.id = m.conversation_id
+            """
+            params = []
+            if workspace_id:
+                query += " WHERE c.workspace_id = %s"
+                params.append(workspace_id)
+            query += " GROUP BY c.id ORDER BY c.updated_at DESC;"
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+            return [
+                {
+                    "id": str(r["id"]),
+                    "title": r["title"],
+                    "workspace_id": r["workspace_id"],
+                    "active_agent": r["active_agent"],
+                    "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                    "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+                    "message_count": int(r["message_count"]),
+                    "last_message": r["last_message"],
+                }
+                for r in rows
+            ]
+
+
+def get_conversation(conversation_id: str) -> Optional[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, title, workspace_id, active_agent, created_at, updated_at
+                FROM conversations
+                WHERE id = %s;
+                """,
+                (conversation_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "id": str(row["id"]),
+                "title": row["title"],
+                "workspace_id": row["workspace_id"],
+                "active_agent": row["active_agent"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+            }
+
+
+def get_conversation_messages(conversation_id: str) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, conversation_id, role, content, agent, pending_action_id, metadata, created_at
+                FROM messages
+                WHERE conversation_id = %s
+                ORDER BY created_at ASC;
+                """,
+                (conversation_id,)
+            )
+            rows = cur.fetchall()
+            return [
+                {
+                    "id": str(r["id"]),
+                    "conversation_id": str(r["conversation_id"]),
+                    "role": r["role"],
+                    "content": r["content"],
+                    "agent": r["agent"],
+                    "pending_action_id": str(r["pending_action_id"]) if r["pending_action_id"] else None,
+                    "metadata": r["metadata"] or {},
+                    "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                }
+                for r in rows
+            ]
+
+
+def save_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    agent: Optional[str] = None,
+    pending_action_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> dict:
+    import json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            meta_json = json.dumps(metadata or {})
+            cur.execute(
+                """
+                INSERT INTO messages (conversation_id, role, content, agent, pending_action_id, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING id, conversation_id, role, content, agent, pending_action_id, metadata, created_at;
+                """,
+                (conversation_id, role, content, agent, pending_action_id, meta_json)
+            )
+            msg_row = cur.fetchone()
+
+            # Update updated_at and optionally active_agent on conversation
+            update_sql = "UPDATE conversations SET updated_at = now()"
+            params = []
+            if agent:
+                update_sql += ", active_agent = %s"
+                params.append(agent)
+            update_sql += " WHERE id = %s;"
+            params.append(conversation_id)
+            cur.execute(update_sql, params)
+
+            return {
+                "id": str(msg_row["id"]),
+                "conversation_id": str(msg_row["conversation_id"]),
+                "role": msg_row["role"],
+                "content": msg_row["content"],
+                "agent": msg_row["agent"],
+                "pending_action_id": str(msg_row["pending_action_id"]) if msg_row["pending_action_id"] else None,
+                "metadata": msg_row["metadata"] or {},
+                "created_at": msg_row["created_at"].isoformat() if msg_row["created_at"] else None,
+            }
+
+
+def update_conversation(conversation_id: str, title: Optional[str] = None, active_agent: Optional[str] = None) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            updates = []
+            params = []
+            if title is not None:
+                updates.append("title = %s")
+                params.append(title)
+            if active_agent is not None:
+                updates.append("active_agent = %s")
+                params.append(active_agent)
+            if not updates:
+                return False
+            updates.append("updated_at = now()")
+            params.append(conversation_id)
+            sql = f"UPDATE conversations SET {', '.join(updates)} WHERE id = %s;"
+            cur.execute(sql, params)
+            return cur.rowcount > 0
+
+
+def delete_conversation(conversation_id: str) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM conversations WHERE id = %s;", (conversation_id,))
+            return cur.rowcount > 0

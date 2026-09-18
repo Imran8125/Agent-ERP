@@ -10,6 +10,7 @@ from typing import Optional
 from db.models import get_conn
 from common.errors import ok, err
 from common.validation import require_non_empty_str
+from confirmation.crypto_ledger import append_audit_log
 
 logger = logging.getLogger(__name__)
 
@@ -89,19 +90,18 @@ def send_email(
 
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO audit_log (actor, action, detail)
-                    VALUES ('system', 'tool_call', %s)
-                    """,
-                    (json.dumps({
+                append_audit_log(
+                    cur,
+                    actor="system",
+                    action="tool_call",
+                    detail={
                         "tool":       "send_email",
                         "to":         to,
                         "subject":    subject,
                         "message_id": message_id,
                         "stubbed":    stubbed,
                         "related_transaction_id": related_transaction_id,
-                    }),),
+                    },
                 )
 
         return ok({"message_id": message_id, "to": to, "stubbed": stubbed})
